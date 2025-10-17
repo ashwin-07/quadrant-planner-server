@@ -269,7 +269,7 @@ class TasksService:
                 raise DatabaseError("Failed to update task")
             
             updated_task = Task(**result.data[0])
-            logger.info(f"Updated task {task_id} for user {task_data.user_id}")
+            logger.info(f"Updated task {task_id} for user {user_id}")
             
             return updated_task
             
