@@ -4,7 +4,7 @@ Pydantic models for Tasks API
 
 from typing import Optional, List, Union
 from datetime import datetime, date
-from pydantic import BaseModel, Field, validator, field_validator
+from pydantic import BaseModel, Field, validator
 from database.models import TaskQuadrant, TaskPriority
 from api.shared.validation import (
     validate_task_title,
@@ -14,6 +14,57 @@ from api.shared.validation import (
     validate_position,
     BaseValidator
 )
+
+
+# =====================================================
+# SUBTASK MODELS (defined first to avoid circular imports)
+# =====================================================
+
+class SubtaskBase(BaseModel):
+    """Base subtask model"""
+    title: str = Field(..., min_length=1, max_length=200, description="Subtask title")
+
+    @validator('title')
+    def validate_title(cls, v: str) -> str:
+        return validate_task_title(v)
+
+
+class SubtaskCreate(SubtaskBase):
+    """Subtask creation model (no ID - for new subtasks)"""
+    pass
+
+
+class SubtaskUpdate(SubtaskBase):
+    """Subtask update model (with ID - for existing subtasks)"""
+    id: str = Field(..., description="Subtask ID for updates")
+    completed: Optional[bool] = Field(None, description="Completion status")
+
+
+class Subtask(SubtaskBase):
+    """Subtask response model"""
+    id: str = Field(..., description="Subtask unique identifier")
+    task_id: str = Field(..., alias="taskId", description="Parent task identifier")
+    completed: bool = Field(default=False, description="Completion status")
+    position: int = Field(default=0, description="Subtask position within task")
+    created_at: datetime = Field(..., alias="createdAt", description="Creation timestamp")
+    updated_at: datetime = Field(..., alias="updatedAt", description="Last update timestamp")
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True
+        json_schema_serialization_defaults_required = True
+        ser_json_by_alias = True
+        json_schema_extra = {
+            "example": {
+                "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+                "taskId": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                "title": "Research requirements",
+                "completed": False,
+                "position": 0,
+                "createdAt": "2025-10-18T10:00:00Z",
+                "updatedAt": "2025-10-18T10:00:00Z"
+            }
+        }
 
 
 class TaskBase(BaseModel):
@@ -72,6 +123,7 @@ class TaskBase(BaseModel):
 class TaskCreate(TaskBase):
     """Task creation model - user_id is extracted from JWT token"""
     goal_id: Optional[str] = Field(None, alias="goalId", description="Associated goal ID")
+    subtasks: Optional[List[Union[SubtaskCreate, SubtaskUpdate]]] = Field(default_factory=list, max_items=20, description="Subtasks for the task")
 
 
 class TaskUpdate(BaseModel):
@@ -86,6 +138,7 @@ class TaskUpdate(BaseModel):
     tags: Optional[List[str]] = Field(None, max_items=10, description="Task tags")
     completed: Optional[bool] = Field(None, description="Completion status")
     position: Optional[int] = Field(None, ge=0, description="Task position within quadrant")
+    subtasks: Optional[List[Union[SubtaskCreate, SubtaskUpdate]]] = Field(None, max_items=20, description="Subtasks for the task")
 
     class Config:
         populate_by_name = True  # Accept both snake_case and camelCase
@@ -153,12 +206,44 @@ class Task(TaskBase):
     completed_at: Optional[datetime] = Field(None, alias="completedAt", description="When task was completed")
     created_at: datetime = Field(..., alias="createdAt", description="Creation timestamp")
     updated_at: datetime = Field(..., alias="updatedAt", description="Last update timestamp")
+    subtasks: List[Subtask] = Field(default_factory=list, description="Subtasks for the task")
 
     class Config:
         from_attributes = True
         populate_by_name = True  # Accept both snake_case and camelCase
         json_schema_serialization_defaults_required = True
         ser_json_by_alias = True  # Serialize using aliases (camelCase) in responses
+        json_schema_extra = {
+            "example": {
+                "id": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                "title": "Complete project proposal",
+                "description": "Write and submit the Q4 proposal",
+                "quadrant": "Q1",
+                "priority": "high",
+                "dueDate": "2025-10-25T00:00:00Z",
+                "completed": False,
+                "subtasks": [
+                    {
+                        "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+                        "taskId": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                        "title": "Research requirements",
+                        "completed": True,
+                        "position": 0,
+                        "createdAt": "2025-10-18T10:00:00Z",
+                        "updatedAt": "2025-10-18T10:00:00Z"
+                    },
+                    {
+                        "id": "b2c3d4e5-f6g7-8901-2345-678901bcdefg",
+                        "taskId": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                        "title": "Draft outline",
+                        "completed": False,
+                        "position": 1,
+                        "createdAt": "2025-10-18T10:05:00Z",
+                        "updatedAt": "2025-10-18T10:05:00Z"
+                    }
+                ]
+            }
+        }
 
 
 class TaskWithGoal(Task):
@@ -200,6 +285,34 @@ class TasksListResponse(BaseModel):
 
     class Config:
         populate_by_name = True
+        json_schema_extra = {
+            "example": {
+                "tasks": [
+                    {
+                        "id": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                        "title": "Complete project proposal",
+                        "description": "Write and submit the Q4 proposal",
+                        "quadrant": "Q1",
+                        "priority": "high",
+                        "dueDate": "2025-10-25T00:00:00Z",
+                        "completed": False,
+                        "subtasks": [
+                            {
+                                "id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+                                "taskId": "f1e2d3c4-b5a6-9876-5432-10fedcba9876",
+                                "title": "Research requirements",
+                                "completed": True,
+                                "position": 0,
+                                "createdAt": "2025-10-18T10:00:00Z",
+                                "updatedAt": "2025-10-18T10:00:00Z"
+                            }
+                        ]
+                    }
+                ],
+                "total": 1,
+                "hasMore": False
+            }
+        }
 
 
 class TaskStats(BaseModel):
