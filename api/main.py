@@ -8,6 +8,7 @@ from typing import Dict, Any
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from dotenv import load_dotenv
 import logging
 
@@ -22,14 +23,16 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# Create FastAPI app with camelCase JSON response
 app = FastAPI(
     title="Quadrant Planner API",
     description="Backend API for Quadrant Planner - A philosophy-driven productivity application implementing Stephen Covey's Time Management Matrix",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
+    # Use camelCase for JSON responses to match frontend conventions
+    # Pydantic models use populate_by_name=True to accept both formats and serialize_by_alias for responses
 )
 
 # Add JWT Bearer token security scheme

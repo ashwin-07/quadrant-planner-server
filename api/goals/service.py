@@ -209,7 +209,7 @@ class GoalsService:
                 raise ConflictError("Maximum of 100 active goals allowed per user")
             
             # Prepare data for insertion
-            insert_data = goal_data.model_dump()
+            insert_data = goal_data.model_dump(mode='json')
             insert_data['user_id'] = user_id
             
             # Use service client for write operations to bypass RLS
@@ -239,7 +239,7 @@ class GoalsService:
             
             # Prepare update data (only include non-None fields)
             update_data = {
-                k: v for k, v in goal_data.model_dump().items() 
+                k: v for k, v in goal_data.model_dump(mode='json').items() 
                 if v is not None and k != "user_id"
             }
             

@@ -3,8 +3,8 @@ Pydantic models for Tasks API
 """
 
 from typing import Optional, List, Union
-from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from datetime import datetime, date
+from pydantic import BaseModel, Field, validator, field_validator
 from database.models import TaskQuadrant, TaskPriority
 from api.shared.validation import (
     validate_task_title,
@@ -21,10 +21,15 @@ class TaskBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="Task title")
     description: Optional[str] = Field(None, max_length=1000, description="Task description")
     quadrant: TaskQuadrant = Field(..., description="Task quadrant")
-    due_date: Optional[datetime] = Field(None, description="Task due date")
-    estimated_minutes: Optional[int] = Field(None, ge=1, le=480, description="Estimated completion time in minutes")
+    due_date: Optional[datetime] = Field(None, alias="dueDate", description="Task due date")
+    estimated_minutes: Optional[int] = Field(None, alias="estimatedMinutes", ge=1, le=480, description="Estimated completion time in minutes")
     priority: TaskPriority = Field(TaskPriority.MEDIUM, description="Task priority")
     tags: List[str] = Field(default_factory=list, max_items=10, description="Task tags")
+
+    class Config:
+        populate_by_name = True  # Accept both snake_case and camelCase
+        json_schema_serialization_defaults_required = True
+        ser_json_by_alias = True  # Serialize using aliases (camelCase) in responses
 
     @validator('title')
     def validate_title(cls, v: str) -> str:
@@ -33,6 +38,27 @@ class TaskBase(BaseModel):
     @validator('description')
     def validate_description(cls, v: Optional[str]) -> Optional[str]:
         return validate_task_description(v)
+
+    @validator('due_date', pre=True)
+    def validate_due_date(cls, v: Optional[Union[str, datetime, date]]) -> Optional[datetime]:
+        """Convert date-only strings to datetime objects"""
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, date):
+            return datetime.combine(v, datetime.min.time())
+        if isinstance(v, str):
+            # Try parsing as date-only string (YYYY-MM-DD)
+            if len(v) == 10 and v.count('-') == 2:
+                try:
+                    parsed_date = datetime.strptime(v, '%Y-%m-%d')
+                    return parsed_date
+                except ValueError:
+                    pass
+            # Let Pydantic handle full datetime strings
+            return v
+        return v
 
     @validator('estimated_minutes')
     def validate_estimated_minutes(cls, v: Optional[int]) -> Optional[int]:
@@ -45,21 +71,26 @@ class TaskBase(BaseModel):
 
 class TaskCreate(TaskBase):
     """Task creation model - user_id is extracted from JWT token"""
-    goal_id: Optional[str] = Field(None, description="Associated goal ID")
+    goal_id: Optional[str] = Field(None, alias="goalId", description="Associated goal ID")
 
 
 class TaskUpdate(BaseModel):
     """Task update model - all fields optional, user_id is extracted from JWT token"""
     title: Optional[str] = Field(None, min_length=1, max_length=200, description="Task title")
     description: Optional[str] = Field(None, max_length=1000, description="Task description")
-    goal_id: Optional[str] = Field(None, description="Associated goal ID")
+    goal_id: Optional[str] = Field(None, alias="goalId", description="Associated goal ID")
     quadrant: Optional[TaskQuadrant] = Field(None, description="Task quadrant")
-    due_date: Optional[datetime] = Field(None, description="Task due date")
-    estimated_minutes: Optional[int] = Field(None, ge=1, le=480, description="Estimated completion time")
+    due_date: Optional[datetime] = Field(None, alias="dueDate", description="Task due date")
+    estimated_minutes: Optional[int] = Field(None, alias="estimatedMinutes", ge=1, le=480, description="Estimated completion time")
     priority: Optional[TaskPriority] = Field(None, description="Task priority")
     tags: Optional[List[str]] = Field(None, max_items=10, description="Task tags")
     completed: Optional[bool] = Field(None, description="Completion status")
     position: Optional[int] = Field(None, ge=0, description="Task position within quadrant")
+
+    class Config:
+        populate_by_name = True  # Accept both snake_case and camelCase
+        json_schema_serialization_defaults_required = True
+        ser_json_by_alias = True  # Serialize using aliases (camelCase) in responses
 
     @validator('title')
     def validate_title(cls, v: Optional[str]) -> Optional[str]:
@@ -70,6 +101,27 @@ class TaskUpdate(BaseModel):
     @validator('description')
     def validate_description(cls, v: Optional[str]) -> Optional[str]:
         return validate_task_description(v)
+
+    @validator('due_date', pre=True)
+    def validate_due_date(cls, v: Optional[Union[str, datetime, date]]) -> Optional[datetime]:
+        """Convert date-only strings to datetime objects"""
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, date):
+            return datetime.combine(v, datetime.min.time())
+        if isinstance(v, str):
+            # Try parsing as date-only string (YYYY-MM-DD)
+            if len(v) == 10 and v.count('-') == 2:
+                try:
+                    parsed_date = datetime.strptime(v, '%Y-%m-%d')
+                    return parsed_date
+                except ValueError:
+                    pass
+            # Let Pydantic handle full datetime strings
+            return v
+        return v
 
     @validator('estimated_minutes')
     def validate_estimated_minutes(cls, v: Optional[int]) -> Optional[int]:
@@ -91,19 +143,22 @@ class TaskUpdate(BaseModel):
 class Task(TaskBase):
     """Task response model"""
     id: str = Field(..., description="Task unique identifier")
-    user_id: str = Field(..., description="User identifier")
-    goal_id: Optional[str] = Field(None, description="Associated goal ID")
+    user_id: str = Field(..., alias="userId", description="User identifier")
+    goal_id: Optional[str] = Field(None, alias="goalId", description="Associated goal ID")
     completed: bool = Field(default=False, description="Completion status")
-    is_staged: bool = Field(default=False, description="Whether task is in staging zone")
+    is_staged: bool = Field(default=False, alias="isStaged", description="Whether task is in staging zone")
     position: int = Field(default=0, description="Task position within quadrant")
-    staged_at: Optional[datetime] = Field(None, description="When task was moved to staging")
-    organized_at: Optional[datetime] = Field(None, description="When task was organized from staging")
-    completed_at: Optional[datetime] = Field(None, description="When task was completed")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    updated_at: datetime = Field(..., description="Last update timestamp")
+    staged_at: Optional[datetime] = Field(None, alias="stagedAt", description="When task was moved to staging")
+    organized_at: Optional[datetime] = Field(None, alias="organizedAt", description="When task was organized from staging")
+    completed_at: Optional[datetime] = Field(None, alias="completedAt", description="When task was completed")
+    created_at: datetime = Field(..., alias="createdAt", description="Creation timestamp")
+    updated_at: datetime = Field(..., alias="updatedAt", description="Last update timestamp")
 
     class Config:
         from_attributes = True
+        populate_by_name = True  # Accept both snake_case and camelCase
+        json_schema_serialization_defaults_required = True
+        ser_json_by_alias = True  # Serialize using aliases (camelCase) in responses
 
 
 class TaskWithGoal(Task):
@@ -115,7 +170,12 @@ class TaskMove(BaseModel):
     """Task move model for drag & drop - user_id is extracted from JWT token"""
     quadrant: TaskQuadrant = Field(..., description="Target quadrant")
     position: int = Field(0, ge=0, description="Target position")
-    is_staged: Optional[bool] = Field(None, description="Whether task is staged")
+    is_staged: Optional[bool] = Field(None, alias="isStaged", description="Whether task is staged")
+
+    class Config:
+        populate_by_name = True  # Accept both snake_case and camelCase
+        json_schema_serialization_defaults_required = True
+        ser_json_by_alias = True  # Serialize using aliases (camelCase) in responses
 
     @validator('position')
     def validate_position_field(cls, v: int) -> int:
@@ -136,27 +196,36 @@ class TasksListResponse(BaseModel):
     """Response model for tasks list"""
     tasks: List[Union[Task, TaskWithGoal]] = Field(..., description="List of tasks")
     total: int = Field(..., ge=0, description="Total number of tasks")
-    has_more: bool = Field(..., description="Whether there are more tasks")
+    has_more: bool = Field(..., alias="hasMore", description="Whether there are more tasks")
+
+    class Config:
+        populate_by_name = True
 
 
 class TaskStats(BaseModel):
     """Task statistics model"""
-    total_tasks: int = Field(default=0, ge=0, description="Total number of tasks")
-    completed_tasks: int = Field(default=0, ge=0, description="Number of completed tasks")
-    active_tasks: int = Field(default=0, ge=0, description="Number of active tasks")
-    overdue_tasks: int = Field(default=0, ge=0, description="Number of overdue tasks")
-    staging_tasks: int = Field(default=0, ge=0, description="Number of tasks in staging")
-    quadrant_distribution: dict = Field(default_factory=dict, description="Task distribution by quadrant")
+    total_tasks: int = Field(default=0, alias="totalTasks", ge=0, description="Total number of tasks")
+    completed_tasks: int = Field(default=0, alias="completedTasks", ge=0, description="Number of completed tasks")
+    active_tasks: int = Field(default=0, alias="activeTasks", ge=0, description="Number of active tasks")
+    overdue_tasks: int = Field(default=0, alias="overdueTasks", ge=0, description="Number of overdue tasks")
+    staging_tasks: int = Field(default=0, alias="stagingTasks", ge=0, description="Number of tasks in staging")
+    quadrant_distribution: dict = Field(default_factory=dict, alias="quadrantDistribution", description="Task distribution by quadrant")
+
+    class Config:
+        populate_by_name = True
 
 
 # Staging zone specific models
 class StagingZoneStatus(BaseModel):
     """Staging zone status model"""
-    current_count: int = Field(..., ge=0, le=5, description="Current number of items in staging")
-    max_capacity: int = Field(5, description="Maximum staging zone capacity")
-    is_full: bool = Field(..., description="Whether staging zone is at capacity")
-    oldest_item: Optional[dict] = Field(None, description="Information about oldest staged item")
-    processing_reminder: Optional[str] = Field(None, description="Processing reminder message")
+    current_count: int = Field(..., alias="currentCount", ge=0, le=5, description="Current number of items in staging")
+    max_capacity: int = Field(5, alias="maxCapacity", description="Maximum staging zone capacity")
+    is_full: bool = Field(..., alias="isFull", description="Whether staging zone is at capacity")
+    oldest_item: Optional[dict] = Field(None, alias="oldestItem", description="Information about oldest staged item")
+    processing_reminder: Optional[str] = Field(None, alias="processingReminder", description="Processing reminder message")
+
+    class Config:
+        populate_by_name = True
 
 
 class StagingZoneResponse(BaseModel):

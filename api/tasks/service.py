@@ -172,7 +172,7 @@ class TasksService:
                 await self._validate_goal_ownership(task_data.goal_id, user_id)
             
             # Prepare data for insertion
-            insert_data = task_data.model_dump()
+            insert_data = task_data.model_dump(mode='json')
             insert_data['user_id'] = user_id
             
             # Set position if not provided
@@ -221,7 +221,7 @@ class TasksService:
             
             # Prepare update data (only include non-None fields)
             update_data = {
-                k: v for k, v in task_data.model_dump().items() 
+                k: v for k, v in task_data.model_dump(mode='json').items() 
                 if v is not None
             }
             
@@ -355,29 +355,33 @@ class TasksService:
         try:
             validate_user_id(user_id)
             
-            # Get current task
+            # Get current task to know the source quadrant
             task = await self.get_task_by_id(task_id, user_id)
+            source_quadrant = task.quadrant
+            target_quadrant = move_data.quadrant
             
             # Check staging zone capacity if moving to staging
-            if move_data.quadrant == "staging" and task.quadrant != "staging":
+            if target_quadrant == "staging" and source_quadrant != "staging":
                 staging_count = await self._count_staging_tasks(user_id)
                 if staging_count >= 5:
                     raise ConflictError("Staging zone is full (maximum 5 items)")
             
             # Prepare update data
             update_data = {
-                "quadrant": move_data.quadrant,
+                "quadrant": target_quadrant,
                 "position": move_data.position,
                 "updated_at": datetime.utcnow().isoformat()
             }
             
             # Update staging-related fields
-            if move_data.quadrant == "staging" and task.quadrant != "staging":
+            if target_quadrant == "staging" and source_quadrant != "staging":
                 update_data["is_staged"] = True
                 update_data["staged_at"] = datetime.utcnow().isoformat()
-            elif move_data.quadrant != "staging" and task.quadrant == "staging":
+                update_data["organized_at"] = None
+            elif target_quadrant != "staging" and source_quadrant == "staging":
                 update_data["is_staged"] = False
                 update_data["organized_at"] = datetime.utcnow().isoformat()
+                update_data["staged_at"] = None
             
             # Use service client for write operations and set user context
             service_db = get_service_client()
@@ -385,18 +389,24 @@ class TasksService:
             # Set user context for RLS policies
             service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
             
+            # Update the task with new quadrant and position
             result = service_db.table("tasks").update(update_data).eq("id", task_id).eq("user_id", user_id).execute()
             
             if not result.data:
                 raise DatabaseError("Failed to move task")
             
-            # Update positions of other tasks in the target quadrant
+            # If moving to a different quadrant, compact positions in the source quadrant
+            if source_quadrant != target_quadrant:
+                logger.info(f"Task moved from {source_quadrant} to {target_quadrant}, compacting source quadrant")
+                await self._compact_positions_in_quadrant(user_id, source_quadrant)
+            
+            # Reorder tasks in the target quadrant (shift tasks at/after new position)
             await self._reorder_tasks_in_quadrant(
-                user_id, move_data.quadrant, task_id, move_data.position
+                user_id, target_quadrant, task_id, move_data.position
             )
             
             moved_task = Task(**result.data[0])
-            logger.info(f"Moved task {task_id} to {move_data.quadrant} at position {move_data.position}")
+            logger.info(f"Moved task {task_id} from {source_quadrant} to {target_quadrant} at position {move_data.position}")
             
             return moved_task
             
@@ -553,20 +563,53 @@ class TasksService:
             raise DatabaseError("Failed to validate goal ownership")
 
     async def _reorder_tasks_in_quadrant(self, user_id: str, quadrant: str, moved_task_id: str, new_position: int) -> None:
-        """Reorder tasks in a quadrant after a move"""
+        """Reorder tasks in a quadrant after a move - inserts task at new_position and shifts others"""
         try:
-            # Get all tasks in the quadrant
-            tasks_result = self.db.table("tasks").select("id, position").eq("user_id", user_id).eq("quadrant", quadrant).order("position").execute()
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            # Get all tasks in the target quadrant (excluding the moved task)
+            tasks_result = service_db.table("tasks").select("id, position").eq("user_id", user_id).eq("quadrant", quadrant).neq("id", moved_task_id).order("position").execute()
             
             if not tasks_result.data:
                 return
             
-            # Update positions for tasks that need to shift
+            # Shift tasks at or after the new position
             for task in tasks_result.data:
-                if task["id"] != moved_task_id and task["position"] >= new_position:
-                    new_pos = task["position"] + 1
-                    self.db.table("tasks").update({"position": new_pos}).eq("id", task["id"]).execute()
+                if task["position"] >= new_position:
+                    service_db.table("tasks").update({
+                        "position": task["position"] + 1,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }).eq("id", task["id"]).eq("user_id", user_id).execute()
+            
+            logger.info(f"Reordered tasks in quadrant {quadrant} after inserting at position {new_position}")
                     
         except Exception as e:
             logger.warning(f"Failed to reorder tasks in quadrant {quadrant}: {e}")
+            # Don't raise here as the main operation was successful
+
+    async def _compact_positions_in_quadrant(self, user_id: str, quadrant: str) -> None:
+        """Compact positions in a quadrant after a task is removed - removes gaps"""
+        try:
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            # Get all tasks in the quadrant ordered by position
+            tasks_result = service_db.table("tasks").select("id, position").eq("user_id", user_id).eq("quadrant", quadrant).order("position").execute()
+            
+            if not tasks_result.data:
+                return
+            
+            # Reassign positions sequentially (0, 1, 2, 3, ...)
+            for index, task in enumerate(tasks_result.data):
+                if task["position"] != index:
+                    service_db.table("tasks").update({
+                        "position": index,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }).eq("id", task["id"]).eq("user_id", user_id).execute()
+            
+            logger.info(f"Compacted positions in quadrant {quadrant}")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to compact positions in quadrant {quadrant}: {e}")
             # Don't raise here as the main operation was successful
