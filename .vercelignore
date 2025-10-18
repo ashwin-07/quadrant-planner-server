@@ -1,0 +1,49 @@
+# Vercel ignore file - exclude files from deployment
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+ENV/
+
+# Testing
+tests/
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Development
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Scripts
+scripts/
+Makefile
+
+# Poetry
+poetry.lock
+pyproject.toml
+
+# Other
+.DS_Store
+.env
+.env.local
+test_*.py
+
