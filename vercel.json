@@ -1,27 +1,15 @@
 {
-  "functions": {
-    "api/main.py": {
-      "runtime": "python3.9",
-      "maxDuration": 30
-    }
-  },
-  "routes": [
+  "version": 2,
+  "builds": [
     {
-      "src": "/api/(.*)",
-      "dest": "/api/main.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/main.py"
+      "src": "index.py",
+      "use": "@vercel/python"
     }
   ],
-  "env": {
-    "ENVIRONMENT": "production",
-    "LOG_LEVEL": "info"
-  },
-  "build": {
-    "env": {
-      "PYTHON_VERSION": "3.9"
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "index.py"
     }
-  }
+  ]
 }
