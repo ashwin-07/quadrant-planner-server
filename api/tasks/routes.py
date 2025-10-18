@@ -13,7 +13,8 @@ from api.dependencies import (
 from api.tasks.service import TasksService
 from api.tasks.models import (
     Task, TaskCreate, TaskUpdate, TaskWithGoal, TaskMove, TaskToggle,
-    TaskBulkUpdate, TasksListResponse, TaskStats, StagingZoneResponse
+    TaskBulkUpdate, TasksListResponse, TaskStats, StagingZoneResponse,
+    Subtask, SubtaskCreate, SubtaskUpdate
 )
 from api.shared.responses import success_response
 from api.shared.exceptions import QuadrantPlannerException
@@ -376,4 +377,38 @@ async def get_task_stats(
         raise
     except Exception as e:
         logger.error(f"Failed to get task stats: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# =====================================================
+# SUBTASK ENDPOINTS
+# =====================================================
+
+@router.patch("/{task_id}/subtasks/{subtask_id}/toggle", response_model=dict)
+async def toggle_subtask(
+    task_id: str = Path(..., description="Task ID"),
+    subtask_id: str = Path(..., description="Subtask ID"),
+    user_id: str = Depends(get_user_id_from_token),
+    db: Client = Depends(get_db)
+):
+    """
+    Toggle subtask completion status
+    
+    **Authentication**: Requires JWT Bearer token in Authorization header
+    
+    - **task_id**: Parent task unique identifier
+    - **subtask_id**: Subtask unique identifier
+    
+    Toggles the completion status of the subtask.
+    """
+    try:
+        service = TasksService(db)
+        subtask = await service.toggle_subtask_completion(task_id, subtask_id, user_id)
+        
+        return subtask
+        
+    except QuadrantPlannerException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to toggle subtask {subtask_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")

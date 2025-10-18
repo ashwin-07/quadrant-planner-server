@@ -93,9 +93,12 @@ class TasksService:
             if not result.data:
                 return [], total, False
             
-            # Convert to Pydantic models
+            # Convert to Pydantic models and fetch subtasks
             tasks = []
             for task_data in result.data:
+                # Fetch subtasks for each task
+                task_data['subtasks'] = await self._get_subtasks(task_data['id'], user_id)
+                
                 if include_goal and task_data.get("goal"):
                     task = TaskWithGoal(**task_data)
                 else:
@@ -142,6 +145,9 @@ class TasksService:
             
             task_data = result.data[0]
             
+            # Fetch subtasks for the task
+            task_data['subtasks'] = await self._get_subtasks(task_id, user_id)
+            
             if include_goal and task_data.get("goal"):
                 return TaskWithGoal(**task_data)
             else:
@@ -175,6 +181,9 @@ class TasksService:
             insert_data = task_data.model_dump(mode='json')
             insert_data['user_id'] = user_id
             
+            # Extract subtasks before inserting task
+            subtasks_data = insert_data.pop('subtasks', [])
+            
             # Set position if not provided
             if "position" not in insert_data:
                 insert_data["position"] = await self._get_next_position(
@@ -196,8 +205,17 @@ class TasksService:
             if not result.data:
                 raise DatabaseError("Failed to create task")
             
-            created_task = Task(**result.data[0])
-            logger.info(f"Created task {created_task.id} for user {user_id}")
+            created_task_data = result.data[0]
+            
+            # Create subtasks if provided
+            if subtasks_data:
+                subtasks = await self._create_subtasks(created_task_data['id'], subtasks_data, user_id)
+                created_task_data['subtasks'] = subtasks
+            else:
+                created_task_data['subtasks'] = []
+            
+            created_task = Task(**created_task_data)
+            logger.info(f"Created task {created_task.id} with {len(subtasks_data)} subtasks for user {user_id}")
             
             return created_task
             
@@ -225,7 +243,10 @@ class TasksService:
                 if v is not None
             }
             
-            if not update_data:
+            # Extract subtasks for separate handling
+            subtasks_data = update_data.pop('subtasks', None)
+            
+            if not update_data and subtasks_data is None:
                 return existing_task
             
             # Handle quadrant changes
@@ -263,12 +284,33 @@ class TasksService:
             # Set user context for RLS policies
             service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
             
-            result = service_db.table("tasks").update(update_data).eq("id", task_id).eq("user_id", user_id).execute()
+            # Update task if there are changes
+            if update_data:
+                result = service_db.table("tasks").update(update_data).eq("id", task_id).eq("user_id", user_id).execute()
+                
+                if not result.data:
+                    raise DatabaseError("Failed to update task")
+                
+                updated_task_data = result.data[0]
+            else:
+                updated_task_data = existing_task.model_dump()
             
-            if not result.data:
-                raise DatabaseError("Failed to update task")
+            # Handle subtasks update if provided
+            if subtasks_data is not None:
+                # Delete all existing subtasks
+                await self._delete_all_subtasks(task_id, user_id)
+                
+                # Create new subtasks if provided
+                if subtasks_data:
+                    subtasks = await self._create_subtasks(task_id, subtasks_data, user_id)
+                    updated_task_data['subtasks'] = subtasks
+                else:
+                    updated_task_data['subtasks'] = []
+            else:
+                # Fetch existing subtasks if not updating them
+                updated_task_data['subtasks'] = await self._get_subtasks(task_id, user_id)
             
-            updated_task = Task(**result.data[0])
+            updated_task = Task(**updated_task_data)
             logger.info(f"Updated task {task_id} for user {user_id}")
             
             return updated_task
@@ -339,7 +381,11 @@ class TasksService:
             if not result.data:
                 raise DatabaseError("Failed to toggle task completion")
             
-            updated_task = Task(**result.data[0])
+            # Fetch subtasks for the updated task
+            updated_task_data = result.data[0]
+            updated_task_data['subtasks'] = await self._get_subtasks(task_id, user_id)
+            
+            updated_task = Task(**updated_task_data)
             logger.info(f"Toggled completion for task {task_id} to {new_completed}")
             
             return updated_task
@@ -405,7 +451,11 @@ class TasksService:
                 user_id, target_quadrant, task_id, move_data.position
             )
             
-            moved_task = Task(**result.data[0])
+            # Fetch subtasks for the moved task
+            moved_task_data = result.data[0]
+            moved_task_data['subtasks'] = await self._get_subtasks(task_id, user_id)
+            
+            moved_task = Task(**moved_task_data)
             logger.info(f"Moved task {task_id} from {source_quadrant} to {target_quadrant} at position {move_data.position}")
             
             return moved_task
@@ -613,3 +663,99 @@ class TasksService:
         except Exception as e:
             logger.warning(f"Failed to compact positions in quadrant {quadrant}: {e}")
             # Don't raise here as the main operation was successful
+
+    # =====================================================
+    # SUBTASK OPERATIONS
+    # =====================================================
+
+    async def _create_subtasks(self, task_id: str, subtasks_data: List[dict], user_id: str) -> List[dict]:
+        """Create subtasks for a task"""
+        try:
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            created_subtasks = []
+            for index, subtask in enumerate(subtasks_data):
+                subtask_insert = {
+                    "task_id": task_id,
+                    "title": subtask.get("title"),
+                    "completed": subtask.get("completed", False),
+                    "position": index
+                }
+                
+                result = service_db.table("subtasks").insert(subtask_insert).execute()
+                if result.data:
+                    created_subtasks.append(result.data[0])
+            
+            logger.info(f"Created {len(created_subtasks)} subtasks for task {task_id}")
+            return created_subtasks
+            
+        except Exception as e:
+            logger.error(f"Failed to create subtasks for task {task_id}: {e}")
+            raise DatabaseError("Failed to create subtasks")
+
+    async def _get_subtasks(self, task_id: str, user_id: str) -> List[dict]:
+        """Get all subtasks for a task"""
+        try:
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            result = service_db.table("subtasks").select("*").eq("task_id", task_id).order("position").execute()
+            
+            return result.data if result.data else []
+            
+        except Exception as e:
+            logger.error(f"Failed to get subtasks for task {task_id}: {e}")
+            return []
+
+    async def _delete_all_subtasks(self, task_id: str, user_id: str) -> None:
+        """Delete all subtasks for a task"""
+        try:
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            service_db.table("subtasks").delete().eq("task_id", task_id).execute()
+            logger.info(f"Deleted all subtasks for task {task_id}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to delete subtasks for task {task_id}: {e}")
+
+    async def toggle_subtask_completion(self, task_id: str, subtask_id: str, user_id: str) -> dict:
+        """Toggle subtask completion status"""
+        try:
+            validate_user_id(user_id)
+            
+            # Verify task ownership
+            await self.get_task_by_id(task_id, user_id)
+            
+            # Get current subtask
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            subtask_result = service_db.table("subtasks").select("*").eq("id", subtask_id).eq("task_id", task_id).execute()
+            
+            if not subtask_result.data:
+                raise NotFoundError("Subtask", subtask_id)
+            
+            current_subtask = subtask_result.data[0]
+            new_completed = not current_subtask["completed"]
+            
+            # Toggle completion
+            update_data = {
+                "completed": new_completed,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            result = service_db.table("subtasks").update(update_data).eq("id", subtask_id).eq("task_id", task_id).execute()
+            
+            if not result.data:
+                raise DatabaseError("Failed to toggle subtask completion")
+            
+            logger.info(f"Toggled subtask {subtask_id} completion to {new_completed}")
+            return result.data[0]
+            
+        except (NotFoundError, DatabaseError):
+            raise
+        except Exception as e:
+            logger.error(f"Failed to toggle subtask {subtask_id}: {e}")
+            raise DatabaseError("Failed to toggle subtask completion")
