@@ -238,13 +238,18 @@ class TasksService:
                 await self._validate_goal_ownership(task_data.goal_id, user_id)
             
             # Prepare update data (only include non-None fields)
+            # Use by_alias=False to get snake_case field names
+            # Use exclude_unset=False to include all fields, even if not explicitly set
+            full_dump = task_data.model_dump(mode='json', by_alias=False, exclude_unset=False, exclude_none=False)
+            
+            # Extract subtasks for separate handling (preserve all fields including id and completed)
+            subtasks_data = full_dump.pop('subtasks', None)
+            
+            # Now filter out None values for the main task data
             update_data = {
-                k: v for k, v in task_data.model_dump(mode='json').items() 
+                k: v for k, v in full_dump.items() 
                 if v is not None
             }
-            
-            # Extract subtasks for separate handling
-            subtasks_data = update_data.pop('subtasks', None)
             
             if not update_data and subtasks_data is None:
                 return existing_task
@@ -297,14 +302,13 @@ class TasksService:
             
             # Handle subtasks update if provided
             if subtasks_data is not None:
-                # Delete all existing subtasks
-                await self._delete_all_subtasks(task_id, user_id)
-                
-                # Create new subtasks if provided
+                # Update subtasks (create new ones and update existing ones)
                 if subtasks_data:
-                    subtasks = await self._create_subtasks(task_id, subtasks_data, user_id)
+                    subtasks = await self._update_subtasks(task_id, subtasks_data, user_id)
                     updated_task_data['subtasks'] = subtasks
                 else:
+                    # Remove all subtasks if empty array provided
+                    await self._delete_all_subtasks(task_id, user_id)
                     updated_task_data['subtasks'] = []
             else:
                 # Fetch existing subtasks if not updating them
@@ -693,6 +697,63 @@ class TasksService:
         except Exception as e:
             logger.error(f"Failed to create subtasks for task {task_id}: {e}")
             raise DatabaseError("Failed to create subtasks")
+
+    async def _update_subtasks(self, task_id: str, subtasks_data: List[dict], user_id: str) -> List[dict]:
+        """Update subtasks for a task - handles both creating new and updating existing subtasks"""
+        try:
+            service_db = get_service_client()
+            service_db.rpc('set_current_user_id', {'user_id_param': user_id}).execute()
+            
+            # Get existing subtasks to know which ones to update vs create
+            existing_subtasks = await self._get_subtasks(task_id, user_id)
+            existing_ids = {subtask['id'] for subtask in existing_subtasks}
+            
+            updated_subtasks = []
+            subtasks_to_delete = set(existing_ids)
+            
+            for index, subtask_data in enumerate(subtasks_data):
+                subtask_id = subtask_data.get('id')
+                
+                if subtask_id and subtask_id in existing_ids:
+                    # Update existing subtask
+                    update_data = {
+                        "title": subtask_data.get("title"),
+                        "completed": subtask_data.get("completed"),
+                        "position": index,
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                    
+                    # Remove None values
+                    update_data = {k: v for k, v in update_data.items() if v is not None}
+                    
+                    result = service_db.table("subtasks").update(update_data).eq("id", subtask_id).eq("task_id", task_id).execute()
+                    if result.data:
+                        updated_subtasks.append(result.data[0])
+                    
+                    subtasks_to_delete.discard(subtask_id)
+                else:
+                    # Create new subtask
+                    subtask_insert = {
+                        "task_id": task_id,
+                        "title": subtask_data.get("title"),
+                        "completed": subtask_data.get("completed", False),
+                        "position": index
+                    }
+                    
+                    result = service_db.table("subtasks").insert(subtask_insert).execute()
+                    if result.data:
+                        updated_subtasks.append(result.data[0])
+            
+            # Delete subtasks that are no longer in the list
+            if subtasks_to_delete:
+                service_db.table("subtasks").delete().eq("task_id", task_id).in_("id", list(subtasks_to_delete)).execute()
+            
+            logger.info(f"Updated {len(updated_subtasks)} subtasks for task {task_id}")
+            return updated_subtasks
+            
+        except Exception as e:
+            logger.error(f"Failed to update subtasks for task {task_id}: {e}")
+            raise DatabaseError("Failed to update subtasks")
 
     async def _get_subtasks(self, task_id: str, user_id: str) -> List[dict]:
         """Get all subtasks for a task"""
