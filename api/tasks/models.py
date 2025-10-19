@@ -34,10 +34,15 @@ class SubtaskCreate(SubtaskBase):
     pass
 
 
-class SubtaskUpdate(SubtaskBase):
-    """Subtask update model (with ID - for existing subtasks)"""
-    id: str = Field(..., description="Subtask ID for updates")
-    completed: Optional[bool] = Field(None, description="Completion status")
+class SubtaskUpdate(BaseModel):
+    """Subtask update model - id is optional (if present, update; if not, create new)"""
+    id: Optional[str] = Field(None, description="Subtask ID (if updating existing subtask)")
+    title: str = Field(..., min_length=1, max_length=200, description="Subtask title")
+    completed: Optional[bool] = Field(default=False, description="Completion status")
+    
+    @validator('title')
+    def validate_title(cls, v: str) -> str:
+        return validate_task_title(v)
 
 
 class Subtask(SubtaskBase):
@@ -138,7 +143,7 @@ class TaskUpdate(BaseModel):
     tags: Optional[List[str]] = Field(None, max_items=10, description="Task tags")
     completed: Optional[bool] = Field(None, description="Completion status")
     position: Optional[int] = Field(None, ge=0, description="Task position within quadrant")
-    subtasks: Optional[List[Union[SubtaskCreate, SubtaskUpdate]]] = Field(None, max_items=20, description="Subtasks for the task")
+    subtasks: Optional[List[SubtaskUpdate]] = Field(None, max_items=20, description="Subtasks for the task - include id to update, omit id to create new")
 
     class Config:
         populate_by_name = True  # Accept both snake_case and camelCase
